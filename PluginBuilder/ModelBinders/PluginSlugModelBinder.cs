@@ -6,6 +6,9 @@ namespace PluginBuilder.ModelBinders;
 
 public class PluginSlugModelBinder : IModelBinder
 {
+    // Route key carrying the tenant key; must stay in sync with OwnPlugin authorization.
+    public const string PluginSlugRouteKey = "pluginSlug";
+
     private readonly DBConnectionFactory _connectionFactory;
 
     public PluginSlugModelBinder(DBConnectionFactory connectionFactory)
@@ -16,7 +19,7 @@ public class PluginSlugModelBinder : IModelBinder
     public async Task BindModelAsync(ModelBindingContext bindingContext)
     {
         // Keep the bound tenant key aligned with the route value checked by OwnPlugin authorization.
-        if (!bindingContext.ActionContext.RouteData.Values.TryGetValue(bindingContext.ModelName, out var value) ||
+        if (!bindingContext.ActionContext.RouteData.Values.TryGetValue(PluginSlugRouteKey, out var value) ||
             value is not string v)
             return;
 
