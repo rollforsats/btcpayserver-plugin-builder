@@ -140,9 +140,6 @@ public class ServerTester : IAsyncDisposable
         var address = webapp.Urls.First();
         Port = new Uri(address).Port;
         Logs.LogInformation("Server started on port {Port}", Port);
-
-        await using var conn = await GetService<DBConnectionFactory>().Open();
-        await conn.ReloadTypesAsync();
     }
 
     public HttpClient CreateHttpClient()
