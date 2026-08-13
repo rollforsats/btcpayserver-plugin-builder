@@ -12,6 +12,8 @@ public class BuildServiceException(string message) : Exception(message);
 
 public class BuildService
 {
+    private static readonly TimeSpan DockerCleanupTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan DockerCleanupPollInterval = TimeSpan.FromMilliseconds(100);
     private static readonly SemaphoreSlim _semaphore = new(5);
     private readonly GitHostingProviderFactory _providerFactory;
     private readonly PluginBuilderOptions _options;
@@ -47,8 +49,9 @@ public class BuildService
         try
         {
             using BuildOutputCapture buildLogCapture = new(fullBuildId, ConnectionFactory);
-            List<string> args = new();
+            List<string> createArgs = new();
             buildParameters = await GetBuildInfo(fullBuildId);
+            var containerName = $"plugin-builder-{Guid.NewGuid():N}";
             string volume;
             try
             {
@@ -63,66 +66,100 @@ public class BuildService
 
             try
             {
-                // Then let's build by running our image plugin-builder (built in DockerStartupHostedService)
-                JObject info = new();
-
-                args.Add("run");
-                args.AddRange(new[] { "--env", $"GIT_REPO={buildParameters.GitRepository}" });
-                info["gitRepository"] = buildParameters.GitRepository;
-                info["dockerVolume"] = volume;
-                if (buildParameters.GitRef != null)
+                try
                 {
-                    args.AddRange(new[] { "--env", $"GIT_REF={buildParameters.GitRef}" });
-                    info["gitRef"] = buildParameters.GitRef;
+                    // Then let's build by running our image plugin-builder (built in DockerStartupHostedService)
+                    JObject info = new();
+
+                    createArgs.AddRange(["container", "create"]);
+                    createArgs.AddRange(new[] { "--name", containerName });
+                    createArgs.AddRange(new[] { "--label", $"BTCPAY_PLUGIN_BUILD={fullBuildId}" });
+                    createArgs.AddRange(new[] { "--env", $"GIT_REPO={buildParameters.GitRepository}" });
+                    info["gitRepository"] = buildParameters.GitRepository;
+                    info["dockerVolume"] = volume;
+                    if (buildParameters.GitRef != null)
+                    {
+                        createArgs.AddRange(new[] { "--env", $"GIT_REF={buildParameters.GitRef}" });
+                        info["gitRef"] = buildParameters.GitRef;
+                    }
+
+                    if (buildParameters.PluginDir != null)
+                    {
+                        createArgs.AddRange(new[] { "--env", $"PLUGIN_DIR={buildParameters.PluginDir}" });
+                        info["pluginDir"] = buildParameters.PluginDir;
+                    }
+
+                    if (buildParameters.BuildConfig != null)
+                    {
+                        createArgs.AddRange(new[] { "--env", $"BUILD_CONFIG={buildParameters.BuildConfig}" });
+                        info["buildConfig"] = buildParameters.BuildConfig;
+                    }
+
+                    createArgs.AddRange(new[] { "-v", $"{volume}:/out" });
+                    createArgs.Add("--rm");
+                    createArgs.Add("plugin-builder");
+                    OutputCapture createOutput = new();
+                    var createCode = await ProcessRunner.RunAsync(new ProcessSpec
+                    {
+                        Executable = "docker",
+                        Arguments = createArgs.ToArray(),
+                        OutputCapture = createOutput,
+                        ErrorCapture = buildLogCapture
+                    }, CancellationToken.None);
+                    if (createCode != 0)
+                        throw new BuildServiceException("docker container create failed");
+
+                    await UpdateBuild(fullBuildId, BuildStates.Running, info);
+                }
+                catch (Exception err)
+                {
+                    await ForceRemoveBuildContainer(containerName);
+                    await UpdateBuild(fullBuildId, BuildStates.Failed, new JObject { ["error"] = err.Message });
+                    throw;
                 }
 
-                if (buildParameters.PluginDir != null)
-                {
-                    args.AddRange(new[] { "--env", $"PLUGIN_DIR={buildParameters.PluginDir}" });
-                    info["pluginDir"] = buildParameters.PluginDir;
-                }
-
-                if (buildParameters.BuildConfig != null)
-                {
-                    args.AddRange(new[] { "--env", $"BUILD_CONFIG={buildParameters.BuildConfig}" });
-                    info["buildConfig"] = buildParameters.BuildConfig;
-                }
-
-                args.AddRange(new[] { "-v", $"{volume}:/out" });
-                args.AddRange(new[] { "--rm" });
-                args.Add("plugin-builder");
-                await UpdateBuild(fullBuildId, BuildStates.Running, info);
-            }
-            catch (Exception err)
-            {
-                await UpdateBuild(fullBuildId, BuildStates.Failed, new JObject { ["error"] = err.Message });
-                throw;
-            }
-
-            try
-            {
                 JObject buildEnv;
                 try
                 {
-                    var code = await ProcessRunner.RunAsync(new ProcessSpec
+                    int code;
+                    using var timeout = new CancellationTokenSource(_options.BuildTimeout);
+                    try
                     {
-                        Executable = "docker",
-                        Arguments = args.ToArray(),
-                        OutputCapture = buildLogCapture,
-                        ErrorCapture = buildLogCapture,
-                        OnOutput = (_, eventArgs) =>
+                        code = await ProcessRunner.RunAsync(new ProcessSpec
                         {
-                            if (!string.IsNullOrEmpty(eventArgs.Data))
-                                EventAggregator.Publish(new BuildLogUpdated(fullBuildId, eventArgs.Data));
-                        },
-                        OnError = (_, eventArgs) =>
-                        {
-                            if (!string.IsNullOrEmpty(eventArgs.Data))
-                                EventAggregator.Publish(new BuildLogUpdated(fullBuildId, eventArgs.Data));
-                        }
-                    }, default);
+                            Executable = "docker",
+                            Arguments = ["container", "start", "--attach", containerName],
+                            OutputCapture = buildLogCapture,
+                            ErrorCapture = buildLogCapture,
+                            OnOutput = (_, eventArgs) =>
+                            {
+                                if (!string.IsNullOrEmpty(eventArgs.Data))
+                                    EventAggregator.Publish(new BuildLogUpdated(fullBuildId, eventArgs.Data));
+                            },
+                            OnError = (_, eventArgs) =>
+                            {
+                                if (!string.IsNullOrEmpty(eventArgs.Data))
+                                    EventAggregator.Publish(new BuildLogUpdated(fullBuildId, eventArgs.Data));
+                            }
+                        }, timeout.Token);
+                    }
+                    catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+                    {
+                        if (!await ForceRemoveBuildContainer(containerName))
+                            throw new BuildServiceException("Plugin build timed out and its container could not be removed");
+                        throw new BuildServiceException($"Plugin build timed out after {_options.BuildTimeout}");
+                    }
+                    catch
+                    {
+                        await ForceRemoveBuildContainer(containerName);
+                        throw;
+                    }
+
                     if (code != 0)
+                    {
+                        await ForceRemoveBuildContainer(containerName);
                         throw new BuildServiceException("docker build failed");
+                    }
 
                     var buildEnvStr = await ReadFileInVolume(volume, "build-env.json");
                     buildEnv = JObject.Parse(buildEnvStr);
@@ -181,21 +218,29 @@ public class BuildService
 
     private async Task<string> CreateBuildVolume(FullBuildId fullBuildId)
     {
-        OutputCapture output = new();
-        var code = await ProcessRunner.RunAsync(
-            new ProcessSpec
-            {
-                Executable = "docker",
-                Arguments = ["volume", "create", "--label", $"BTCPAY_PLUGIN_BUILD={fullBuildId}"],
-                OutputCapture = output
-            },
-            default);
-        if (code != 0)
-            throw new BuildServiceException("docker volume create failed");
+        var volume = $"plugin-builder-volume-{Guid.NewGuid():N}";
+        int code;
+        try
+        {
+            code = await ProcessRunner.RunAsync(
+                new ProcessSpec
+                {
+                    Executable = "docker",
+                    Arguments = ["volume", "create", "--label", $"BTCPAY_PLUGIN_BUILD={fullBuildId}", volume]
+                },
+                CancellationToken.None);
+        }
+        catch
+        {
+            await RemoveBuildVolume(volume);
+            throw;
+        }
 
-        var volume = output.ToString().Trim();
-        if (string.IsNullOrWhiteSpace(volume))
-            throw new BuildServiceException("docker volume create returned no volume name");
+        if (code != 0)
+        {
+            await RemoveBuildVolume(volume);
+            throw new BuildServiceException("docker volume create failed");
+        }
 
         return volume;
     }
@@ -203,12 +248,22 @@ public class BuildService
     private async Task RemoveBuildVolume(string volume)
     {
         OutputCapture error = new();
-        var code = await ProcessRunner.RunAsync(new ProcessSpec
+        using var timeout = new CancellationTokenSource(DockerCleanupTimeout);
+        int code;
+        try
         {
-            Executable = "docker",
-            Arguments = ["volume", "rm", volume],
-            ErrorCapture = error
-        }, default);
+            code = await ProcessRunner.RunAsync(new ProcessSpec
+            {
+                Executable = "docker",
+                Arguments = ["volume", "rm", volume],
+                ErrorCapture = error
+            }, timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            Logger.LogCritical("Timed out while removing docker build volume {Volume}", volume);
+            return;
+        }
 
         if (code != 0)
         {
@@ -217,6 +272,60 @@ public class BuildService
                 Logger.LogWarning("Failed to remove docker build volume {Volume}", volume);
             else
                 Logger.LogWarning("Failed to remove docker build volume {Volume}: {Error}", volume, details);
+        }
+    }
+
+    private async Task<bool> ForceRemoveBuildContainer(string containerName)
+    {
+        using var timeout = new CancellationTokenSource(DockerCleanupTimeout);
+        try
+        {
+            OutputCapture error = new();
+            var code = await ProcessRunner.RunAsync(new ProcessSpec
+            {
+                Executable = "docker",
+                Arguments = ["container", "rm", "--force", containerName],
+                ErrorCapture = error
+            }, timeout.Token);
+
+            if (code == 0)
+                return true;
+
+            var details = error.ToString();
+            if (details.Contains("No such container", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (details.Contains("removal of container", StringComparison.OrdinalIgnoreCase) &&
+                details.Contains("already in progress", StringComparison.OrdinalIgnoreCase))
+                return await WaitForContainerRemoval(containerName, timeout.Token);
+
+            Logger.LogCritical("Failed to force-remove plugin build container {ContainerName}: {Error}",
+                containerName, details.Trim());
+            return false;
+        }
+        catch (OperationCanceledException)
+        {
+            Logger.LogCritical("Timed out while force-removing plugin build container {ContainerName}", containerName);
+            return false;
+        }
+    }
+
+    private async Task<bool> WaitForContainerRemoval(string containerName, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            OutputCapture error = new();
+            var code = await ProcessRunner.RunAsync(new ProcessSpec
+            {
+                Executable = "docker",
+                Arguments = ["container", "inspect", containerName],
+                ErrorCapture = error
+            }, cancellationToken);
+
+            if (code != 0)
+                return error.ToString().Contains("No such container", StringComparison.OrdinalIgnoreCase);
+
+            await Task.Delay(DockerCleanupPollInterval, cancellationToken);
         }
     }
 
