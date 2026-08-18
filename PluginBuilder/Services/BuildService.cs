@@ -12,6 +12,24 @@ public class BuildServiceException(string message) : Exception(message);
 
 public class BuildService
 {
+    private const int MaxBuildMetadataBytes = 1024 * 1024;
+    private const int BuildMetadataTooLargeExitCode = 42;
+    private const string BuildMetadataReadScript = """
+        set -eu
+        file="$1"
+        limit="$2"
+        tmp="$(mktemp)"
+        trap 'rm -f "$tmp"' EXIT
+
+        head -c "$((limit + 1))" -- "$file" > "$tmp"
+        if [ "$(wc -c < "$tmp")" -gt "$limit" ]; then
+            exit 42
+        fi
+
+        cat "$tmp"
+        """;
+
+    private static readonly TimeSpan BuildMetadataReadTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DockerCleanupTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DockerCleanupPollInterval = TimeSpan.FromMilliseconds(100);
     private static readonly SemaphoreSlim _semaphore = new(5);
@@ -363,18 +381,74 @@ public class BuildService
 
     private async Task<string> ReadFileInVolume(string volume, string file)
     {
+        var containerName = $"plugin-builder-metadata-{Guid.NewGuid():N}";
+        try
+        {
+            var createCode = await ProcessRunner.RunAsync(
+                new ProcessSpec
+                {
+                    Executable = "docker",
+                    Arguments =
+                    [
+                        "container", "create",
+                        "--name", containerName,
+                        "--rm",
+                        "-v", $"{volume}:/out:ro",
+                        "plugin-builder",
+                        "/bin/sh", "-c", BuildMetadataReadScript,
+                        "read-build-metadata",
+                        $"/out/{file}",
+                        MaxBuildMetadataBytes.ToString()
+                    ],
+                    OutputCapture = new OutputCapture(),
+                    ErrorCapture = new OutputCapture()
+                },
+                CancellationToken.None);
+
+            if (createCode != 0)
+                throw new BuildServiceException(
+                    $"docker container create failed while reading build metadata file '{file}'");
+        }
+        catch
+        {
+            await ForceRemoveBuildContainer(containerName);
+            throw;
+        }
+
         OutputCapture output = new();
-        // Let's read the build-env.json
-        var code = await ProcessRunner.RunAsync(
-            new ProcessSpec
-            {
-                Executable = "docker",
-                Arguments = new[] { "run", "--rm", "-v", $"{volume}:/out", "plugin-builder", "cat", $"/out/{file}" },
-                OutputCapture = output
-            }, default);
-        if (code != 0)
-            throw new BuildServiceException("docker run to read a file in volume");
-        return output.ToString();
+        using var timeout = new CancellationTokenSource(BuildMetadataReadTimeout);
+        try
+        {
+            var code = await ProcessRunner.RunAsync(
+                new ProcessSpec
+                {
+                    Executable = "docker",
+                    Arguments = ["container", "start", "--attach", containerName],
+                    OutputCapture = output,
+                    ErrorCapture = new OutputCapture()
+                },
+                timeout.Token);
+
+            if (code == BuildMetadataTooLargeExitCode)
+                throw new BuildServiceException(
+                    $"Build metadata file '{file}' exceeds the {MaxBuildMetadataBytes}-byte limit");
+
+            if (code != 0)
+                throw new BuildServiceException(
+                    $"docker container start failed while reading build metadata file '{file}'");
+
+            return output.ToString();
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            await ForceRemoveBuildContainer(containerName);
+            throw new BuildServiceException($"Timed out while reading build metadata file '{file}'");
+        }
+        catch
+        {
+            await ForceRemoveBuildContainer(containerName);
+            throw;
+        }
     }
 
     public async Task UpdateBuild(FullBuildId fullBuildId, BuildStates newState, JObject? buildInfo, PluginManifest? manifestInfo = null)
