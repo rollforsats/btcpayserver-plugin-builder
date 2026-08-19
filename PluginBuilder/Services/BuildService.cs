@@ -117,6 +117,8 @@ public class BuildService
                     createArgs.Add("--rm");
                     createArgs.Add("plugin-builder");
                     OutputCapture createOutput = new();
+                    // Let resource creation settle before starting the worker timeout. Cancelling
+                    // this call can leave us unable to tell whether Docker created the container.
                     var createCode = await ProcessRunner.RunAsync(new ProcessSpec
                     {
                         Executable = "docker",
