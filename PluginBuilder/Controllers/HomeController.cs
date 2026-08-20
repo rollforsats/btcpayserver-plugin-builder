@@ -93,7 +93,7 @@ public class HomeController(
         return View("Views/Plugin/Dashboard", vm);
     }
 
-    [HttpGet("/logout")]
+    [HttpPost("/logout")]
     public async Task<IActionResult> Logout()
     {
         await signInManager.SignOutAsync();
