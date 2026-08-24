@@ -54,7 +54,7 @@ public class GPGKeyService(DBConnectionFactory connectionFactory)
                     PublicKeyAlgorithmTag.RsaSign or
                     PublicKeyAlgorithmTag.Dsa or
                     PublicKeyAlgorithmTag.ECDsa or
-                    PublicKeyAlgorithmTag.EdDsa => true,
+                    PublicKeyAlgorithmTag.EdDsa_Legacy => true,
                 _ => false
             };
             if (!canSign)
@@ -69,7 +69,7 @@ public class GPGKeyService(DBConnectionFactory connectionFactory)
                 return false;
             }
 
-            if (key.IsRevoked() || key.GetSignatures().Any(sig => sig.SignatureType == PgpSignature.KeyRevocation))
+            if (key.HasRevocation() || key.GetSignatures().Any(sig => sig.SignatureType == PgpSignature.KeyRevocation))
             {
                 message = "Key is revoked";
                 return false;
