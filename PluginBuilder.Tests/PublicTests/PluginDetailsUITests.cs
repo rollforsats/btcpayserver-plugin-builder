@@ -250,8 +250,9 @@ public class PluginDetailsUITests(ITestOutputHelper output) : PageTest
         await tester.Server.CreateFakeUserAsync("voter@x.com", confirmEmail: true, githubVerified: true);
 
 
-        await tester.VerifyUserAccounts("reviewer@x.com", "reviewernpub1");
-        await tester.VerifyUserAccounts("voter@x.com", "voternpub1");
+        const string reusedGithubHandle = "reused-handle";
+        await tester.VerifyUserAccounts("reviewer@x.com", "reviewernpub1", reusedGithubHandle);
+        await tester.VerifyUserAccounts("voter@x.com", "voternpub1", reusedGithubHandle);
 
         const string url = $"/public/plugins/{slug}";
 
@@ -343,6 +344,7 @@ public class PluginDetailsUITests(ITestOutputHelper output) : PageTest
         await tester.Page.FillAsync("textarea[name='Body']", "scam");
         await tester.Page.Locator("#review-form").GetByRole(AriaRole.Button, new LocatorGetByRoleOptions { Name = "Submit" }).ClickAsync();
         await tester.Page.WaitForURLAsync(new Regex("public/plugins/.+?#reviews"));
+        await Expect(tester.Page.Locator(".test-review-card")).ToHaveCountAsync(2);
 
         //check if filter works
         await tester.Page.ClickAsync("a[href*='RatingFilter=4'][href*='#reviews']");
