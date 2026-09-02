@@ -220,12 +220,12 @@ public class PlaywrightTester : IAsyncDisposable
         await Page.ClickAsync("#LoginButton");
     }
 
-    public async Task VerifyUserAccounts(string email, string npub = "nostrNpub")
+    public async Task VerifyUserAccounts(string email, string npub = "nostrNpub", string? githubHandle = null)
     {
         await using var scope = Server.WebApp.Services.CreateAsyncScope();
         var factory = scope.ServiceProvider.GetRequiredService<DBConnectionFactory>();
         await using var conn = await factory.Open();
-        var githubHandle = $"test-eligibility-{email.Replace("@", "_").Replace(".", "_")}";
+        githubHandle ??= $"test-eligibility-{email.Replace("@", "_").Replace(".", "_")}";
 
         var settings = new AccountSettings { Nostr = new NostrSettings { Npub = npub, Proof = "nostrProof" }, Github = githubHandle };
         await conn.ExecuteAsync(

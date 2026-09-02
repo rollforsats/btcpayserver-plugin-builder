@@ -685,6 +685,8 @@ public static class NpgsqlConnectionExtensions
         // 2. When that person registers as a system user, admin can link them (matched by profile_url)
         // 3. The user_id gets populated, claiming ownership of their previously imported reviews
         // This allows users to "claim" their external reviews when they join the platform.
+        // A profile URL must never match a reviewer already linked to another system user.
+        // The outer user_id predicate rechecks that invariant after waiting for a concurrent update lock.
         const string updateSql = """
                                  UPDATE plugin_reviewers p
                                  SET
@@ -699,7 +701,7 @@ public static class NpgsqlConnectionExtensions
                                      FROM plugin_reviewers
                                      WHERE
                                          (@user_id IS NOT NULL AND user_id = @user_id)
-                                         OR (@profile_url IS NOT NULL AND profile_url = @profile_url)
+                                         OR (@profile_url IS NOT NULL AND profile_url = @profile_url AND user_id IS NULL)
                                      ORDER BY
                                          CASE
                                              WHEN @user_id IS NOT NULL AND user_id = @user_id THEN 0
@@ -708,6 +710,10 @@ public static class NpgsqlConnectionExtensions
                                          END
                                      LIMIT 1
                                  )
+                                   AND (
+                                       p.user_id IS NULL
+                                       OR (@user_id IS NOT NULL AND p.user_id = @user_id)
+                                   )
                                  RETURNING id;
                                  """;
 
