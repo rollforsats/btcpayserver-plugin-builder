@@ -12,6 +12,8 @@ public class AdminSettingsCache
     public string[] NostrRelays { get; private set; } = Array.Empty<string>();
     public int RateLimitPermitLimit { get; private set; } = 30;
     public int RateLimitWindowSeconds { get; private set; } = 60;
+    public bool RegistrationEnabled { get; private set; }
+    public bool NewBuildsEnabled { get; private set; }
 
     public async Task RefreshIsVerifiedEmailRequiredForPublish(NpgsqlConnection conn)
     {
@@ -31,6 +33,7 @@ public class AdminSettingsCache
 
     public async Task RefreshAllAdminSettings(NpgsqlConnection conn)
     {
+        await RefreshFeatureSettings(conn);
         await RefreshIsVerifiedEmailRequiredForPublish(conn);
         await RefreshIsVerifiedEmailRequiredForLogin(conn);
         await RefreshIsVerifiedGithubRequired(conn);
@@ -58,5 +61,11 @@ public class AdminSettingsCache
     {
         RateLimitPermitLimit = await conn.GetRateLimitPermitLimitSetting();
         RateLimitWindowSeconds = await conn.GetRateLimitWindowSecondsSetting();
+    }
+
+    public async Task RefreshFeatureSettings(NpgsqlConnection conn)
+    {
+        RegistrationEnabled = await conn.GetRegistrationEnabledSetting();
+        NewBuildsEnabled = await conn.GetNewBuildsEnabledSetting();
     }
 }

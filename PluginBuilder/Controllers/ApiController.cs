@@ -28,7 +28,8 @@ public class ApiController(
     UserManager<IdentityUser> userManager,
     UserVerifiedLogic userVerifiedLogic,
     IHttpClientFactory httpClientFactory,
-    ServerEnvironment serverEnvironment)
+    ServerEnvironment serverEnvironment,
+    AdminSettingsCache adminSettingsCache)
     : ControllerBase
 {
     private sealed class BuildRow
@@ -361,6 +362,9 @@ public class ApiController(
         PluginSlug pluginSlug,
         CreateBuildRequest model)
     {
+        if (!adminSettingsCache.NewBuildsEnabled)
+            return BuildsUnavailable();
+
         await using var conn = await connectionFactory.Open();
 
         if (!await userVerifiedLogic.IsUserEmailVerifiedForPublish(User) || !await userVerifiedLogic.IsUserGithubVerified(User, conn))
@@ -403,6 +407,9 @@ public class ApiController(
             return ValidationErrorResult(ModelState);
         }
 
+        if (!adminSettingsCache.NewBuildsEnabled)
+            return BuildsUnavailable();
+
         var buildId = await conn.NewBuild(pluginSlug, model.ToBuildParameter());
         var buildUrl = Url.ActionLink(nameof(PluginController.Build), "Plugin",
             new { pluginSlug = pluginSlug.ToString(), buildId });
@@ -414,6 +421,15 @@ public class ApiController(
             ["pluginSlug"] = pluginSlug.ToString(),
             ["buildId"] = buildId,
             ["buildUrl"] = buildUrl
+        });
+    }
+
+    private IActionResult BuildsUnavailable()
+    {
+        return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+        {
+            error = "builds-disabled",
+            message = "Plugin builds are temporarily disabled."
         });
     }
 

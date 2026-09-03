@@ -34,7 +34,8 @@ public class HomeController(
     NostrService nostrService,
     GitHostingProviderFactory gitHostingProviderFactory,
     ILogger<HomeController> logger,
-    HealthCheckService healthCheckService)
+    HealthCheckService healthCheckService,
+    AdminSettingsCache adminSettingsCache)
     : Controller
 {
     [AllowAnonymous]
@@ -159,6 +160,9 @@ public class HomeController(
     [HttpGet("/register")]
     public IActionResult Register(string? returnUrl = null)
     {
+        if (!adminSettingsCache.RegistrationEnabled)
+            return RegistrationUnavailable();
+
         ViewData["ReturnUrl"] = returnUrl;
         return View(new RegisterViewModel());
     }
@@ -168,6 +172,9 @@ public class HomeController(
     [EnableRateLimiting(Policies.PublicApiRateLimit)]
     public async Task<IActionResult> Register(RegisterViewModel model, string? returnUrl = null)
     {
+        if (!adminSettingsCache.RegistrationEnabled)
+            return RegistrationUnavailable();
+
         ViewData["ReturnUrl"] = returnUrl;
         if (!ModelState.IsValid)
             return View(model);
@@ -207,6 +214,12 @@ public class HomeController(
 
         await signInManager.SignInAsync(user, false);
         return RedirectToLocal(returnUrl);
+    }
+
+    private IActionResult RegistrationUnavailable()
+    {
+        HttpContext.Items[UIErrorController.ErrorDetailsKey] = "Registration is temporarily disabled.";
+        return StatusCode(StatusCodes.Status503ServiceUnavailable);
     }
 
 

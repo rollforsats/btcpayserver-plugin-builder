@@ -1,5 +1,6 @@
 using System.Reflection;
 using Microsoft.Extensions.Logging.Abstractions;
+using PluginBuilder.Controllers.Logic;
 using PluginBuilder.Services;
 using Xunit;
 
@@ -148,7 +149,8 @@ public class BuildMetadataReadSecurityTests
                 null!,
                 null!,
                 null!,
-                null!);
+                null!,
+                new AdminSettingsCache());
 
             var method = typeof(BuildService).GetMethod(
                 "ReadFileInVolume",

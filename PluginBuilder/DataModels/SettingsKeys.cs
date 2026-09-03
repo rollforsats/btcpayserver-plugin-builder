@@ -11,4 +11,6 @@ public static class SettingsKeys
     public const string NostrRelays = nameof(NostrRelays);
     public const string RateLimitPermitLimit = nameof(RateLimitPermitLimit);
     public const string RateLimitWindowSeconds = nameof(RateLimitWindowSeconds);
+    public const string RegistrationEnabled = nameof(RegistrationEnabled);
+    public const string NewBuildsEnabled = nameof(NewBuildsEnabled);
 }

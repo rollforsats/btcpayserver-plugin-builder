@@ -2,6 +2,7 @@ using System.Threading.Channels;
 using Dapper;
 using Newtonsoft.Json.Linq;
 using PluginBuilder.Configuration;
+using PluginBuilder.Controllers.Logic;
 using PluginBuilder.Events;
 using PluginBuilder.Util;
 using PluginBuilder.Util.Extensions;
@@ -35,6 +36,7 @@ public class BuildService
     private static readonly SemaphoreSlim _semaphore = new(5);
     private readonly GitHostingProviderFactory _providerFactory;
     private readonly PluginBuilderOptions _options;
+    private readonly AdminSettingsCache _adminSettingsCache;
 
     public BuildService(
         ILogger<BuildService> logger,
@@ -43,7 +45,8 @@ public class BuildService
         DBConnectionFactory connectionFactory,
         EventAggregator eventAggregator,
         AzureStorageClient azureStorageClient,
-        GitHostingProviderFactory providerFactory)
+        GitHostingProviderFactory providerFactory,
+        AdminSettingsCache adminSettingsCache)
     {
         Logger = logger;
         _options = options;
@@ -52,6 +55,7 @@ public class BuildService
         EventAggregator = eventAggregator;
         AzureStorageClient = azureStorageClient;
         _providerFactory = providerFactory;
+        _adminSettingsCache = adminSettingsCache;
     }
 
     public ILogger<BuildService> Logger { get; }
@@ -62,10 +66,17 @@ public class BuildService
 
     public async Task Build(FullBuildId fullBuildId)
     {
+        if (await RejectBuildIfDisabled(fullBuildId))
+            return;
+
         BuildInfo buildParameters;
         await _semaphore.WaitAsync();
         try
         {
+            // A build may have been waiting for an execution slot when the setting changed.
+            if (await RejectBuildIfDisabled(fullBuildId))
+                return;
+
             using BuildOutputCapture buildLogCapture = new(fullBuildId, ConnectionFactory);
             List<string> createArgs = new();
             buildParameters = await GetBuildInfo(fullBuildId);
@@ -130,6 +141,16 @@ public class BuildService
                         throw new BuildServiceException("docker container create failed");
 
                     await UpdateBuild(fullBuildId, BuildStates.Running, info);
+
+                    // The setting may have changed while Docker resources were being created.
+                    // Do not start plugin code after builds have been disabled.
+                    if (await RejectBuildIfDisabled(fullBuildId))
+                    {
+                        if (!await ForceRemoveBuildContainer(containerName))
+                            throw new BuildServiceException(
+                                "Plugin builds were disabled and the build container could not be removed");
+                        return;
+                    }
                 }
                 catch (Exception err)
                 {
@@ -234,6 +255,17 @@ public class BuildService
         }
 
         await SavePluginContributorSnapshot(fullBuildId.PluginSlug, buildParameters);
+    }
+
+    private async Task<bool> RejectBuildIfDisabled(FullBuildId fullBuildId)
+    {
+        if (_adminSettingsCache.NewBuildsEnabled)
+            return false;
+
+        Logger.LogWarning("Skipping build {BuildId} because plugin builds are disabled", fullBuildId);
+        await UpdateBuild(fullBuildId, BuildStates.Failed,
+            new JObject { ["error"] = "Plugin builds are temporarily disabled." });
+        return true;
     }
 
     private async Task<string> CreateBuildVolume(FullBuildId fullBuildId)

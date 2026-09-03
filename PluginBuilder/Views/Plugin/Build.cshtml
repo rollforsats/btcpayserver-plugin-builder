@@ -1,5 +1,6 @@
 @using PluginBuilder.ViewModels.Shared
 @model BuildViewModel
+@inject PluginBuilder.Controllers.Logic.AdminSettingsCache AdminSettingsCache
 @{
     Layout = "_Layout";
     ViewData.SetActivePage(PluginNavPages.Dashboard, $"Build {Model.FullBuildId.BuildId}", Model.FullBuildId.ToString());
@@ -36,8 +37,11 @@
                 <span class="badge bg-warning">@Model.State</span>
                 break;
             case "failed":
-                <a asp-action="CreateBuild" asp-route-pluginSlug="@Model.FullBuildId.PluginSlug" asp-route-copyBuild="@Model.FullBuildId.BuildId"
-                   class="btn btn-secondary">Retry</a>
+                if (AdminSettingsCache.NewBuildsEnabled)
+                {
+                    <a asp-action="CreateBuild" asp-route-pluginSlug="@Model.FullBuildId.PluginSlug" asp-route-copyBuild="@Model.FullBuildId.BuildId"
+                       class="btn btn-secondary">Retry</a>
+                }
                 break;
             case "uploaded":
                 if (Model.Version is null || Model.Version?.PreRelease is true)
@@ -56,8 +60,11 @@
                         </form>
                     }
 
-                    <a asp-action="CreateBuild" asp-route-pluginSlug="@Model.FullBuildId.PluginSlug" asp-route-copyBuild="@Model.FullBuildId.BuildId"
-                       class="btn btn-secondary">Retry</a>
+                    if (AdminSettingsCache.NewBuildsEnabled)
+                    {
+                        <a asp-action="CreateBuild" asp-route-pluginSlug="@Model.FullBuildId.PluginSlug" asp-route-copyBuild="@Model.FullBuildId.BuildId"
+                           class="btn btn-secondary">Retry</a>
+                    }
                 }
                 else if (Model.Version?.Published is true)
                 {

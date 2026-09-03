@@ -31,6 +31,7 @@ public class PluginController(
     PluginOwnershipService ownershipService,
     VersionLifecycleService versionLifecycleService,
     GitHostingProviderFactory gitHostingProviderFactory,
+    AdminSettingsCache adminSettingsCache,
     ILogger<PluginController> logger)
     : Controller
 {
@@ -240,6 +241,9 @@ public class PluginController(
         [ModelBinder(typeof(PluginSlugModelBinder))]
         PluginSlug pluginSlug, long? copyBuild = null)
     {
+        if (!adminSettingsCache.NewBuildsEnabled)
+            return BuildsUnavailable();
+
         await using var conn = await connectionFactory.Open();
         if (!await userVerifiedLogic.IsUserEmailVerifiedForPublish(User) || !await userVerifiedLogic.IsUserGithubVerified(User, conn))
         {
@@ -279,6 +283,9 @@ public class PluginController(
         PluginSlug pluginSlug,
         CreateBuildViewModel model)
     {
+        if (!adminSettingsCache.NewBuildsEnabled)
+            return BuildsUnavailable();
+
         if (!ModelState.IsValid)
             return View(model);
         await using var conn = await connectionFactory.Open();
@@ -304,6 +311,9 @@ public class PluginController(
             return View(model);
         }
 
+        if (!adminSettingsCache.NewBuildsEnabled)
+            return BuildsUnavailable();
+
         var buildId = await conn.NewBuild(pluginSlug, model.ToBuildParameter());
         if (buildId == 0)
         {
@@ -317,6 +327,12 @@ public class PluginController(
 
         _ = buildService.Build(new FullBuildId(pluginSlug, buildId));
         return RedirectToAction(nameof(Build), new { pluginSlug = pluginSlug.ToString(), buildId });
+    }
+
+    private IActionResult BuildsUnavailable()
+    {
+        HttpContext.Items[UIErrorController.ErrorDetailsKey] = "Plugin builds are temporarily disabled.";
+        return StatusCode(StatusCodes.Status503ServiceUnavailable);
     }
 
     [HttpGet("listing-history")]
