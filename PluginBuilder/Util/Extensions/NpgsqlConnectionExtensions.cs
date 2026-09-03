@@ -535,6 +535,18 @@ public static class NpgsqlConnectionExtensions
         return int.TryParse(v, out var seconds) && seconds > 0 ? seconds : 60;
     }
 
+    public static async Task<bool> GetRegistrationEnabledSetting(this NpgsqlConnection connection)
+    {
+        var value = await connection.SettingsGetAsync(SettingsKeys.RegistrationEnabled);
+        return bool.TryParse(value, out var enabled) && enabled;
+    }
+
+    public static async Task<bool> GetNewBuildsEnabledSetting(this NpgsqlConnection connection)
+    {
+        var value = await connection.SettingsGetAsync(SettingsKeys.NewBuildsEnabled);
+        return bool.TryParse(value, out var enabled) && enabled;
+    }
+
     #endregion
 
 

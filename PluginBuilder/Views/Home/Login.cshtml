@@ -1,4 +1,5 @@
 @model LoginViewModel
+@inject PluginBuilder.Controllers.Logic.AdminSettingsCache AdminSettingsCache
 @{
     ViewData["Title"] = "Sign in";
     Layout = "_LayoutHomeModal";
@@ -44,8 +45,11 @@
             </div>
         </fieldset>
     </form>
-    <p class="text-center mt-2 mb-0">
-        <a id="Register" style="font-size:1.15rem" asp-action="Register" asp-route-returnurl="@ViewData["ReturnUrl"]" tabindex="4">Create your
-            account</a>
-    </p>
+    @if (AdminSettingsCache.RegistrationEnabled)
+    {
+        <p class="text-center mt-2 mb-0">
+            <a id="Register" style="font-size:1.15rem" asp-action="Register" asp-route-returnurl="@ViewData["ReturnUrl"]" tabindex="4">Create your
+                account</a>
+        </p>
+    }
 </div>
